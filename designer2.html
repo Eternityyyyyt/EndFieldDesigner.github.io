@@ -572,7 +572,7 @@
                 ctx.lineTo(drawPoints[i].x * CELL_SIZE + CELL_SIZE/2, drawPoints[i].y * CELL_SIZE + CELL_SIZE/2);
             }
             if (isClosed) ctx.closePath();
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
             ctx.lineWidth = CELL_SIZE - 4;
             ctx.stroke();
             ctx.strokeStyle = '#ffffff';
@@ -692,7 +692,7 @@
             for (let i = 1; i < beltPath.length; i++) {
                 ctx.lineTo(beltPath[i].x * CELL_SIZE + CELL_SIZE/2, beltPath[i].y * CELL_SIZE + CELL_SIZE/2);
             }
-            ctx.strokeStyle = baseValid ? 'rgba(0, 255, 0, 0.6)' : 'rgba(255, 0, 0, 0.6)';
+            ctx.strokeStyle = baseValid ? 'rgba(0, 255, 0, 0.4)' : 'rgba(255, 0, 0, 0.4)';
             ctx.lineWidth = CELL_SIZE - 4;
             ctx.stroke();
             ctx.strokeStyle = baseValid ? '#00ff00' : '#ff0000';
@@ -910,7 +910,7 @@
         else if (w === 3 && h === 3) fillColor = 'rgba(33, 42, 224, 0.4)'; 
         else if (w === 5 && h === 5) fillColor = 'rgba(50, 180, 90, 0.4)'; 
         else if ((w === 4 && h === 6) || (w === 6 && h === 4)) fillColor = 'rgba(110, 27, 151, 0.4)';
-        else fillColor = 'rgba(200, 200, 210, 0.6)';
+        else fillColor = 'rgba(200, 200, 210, 0.4)';
         ctx.fillStyle = fillColor;
         ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, w * CELL_SIZE, h * CELL_SIZE);
         const isPowered = isMachinePowered(m);

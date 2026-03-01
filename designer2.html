@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>终末地产线</title>
+    <title>终末地产线设计工具</title>
     <style>
         /* ===== 清新浅色 · 现代化UI ===== */
         * {
@@ -166,7 +166,6 @@
             border-radius: 12px;
             background-color: #568296;
             box-shadow: 0 0 0 1px #8eb2c2, 0 8px 16px rgba(0,20,30,0.2);
-            cursor: crosshair;
         }
         footer {
             color: #5b7483;
@@ -233,6 +232,9 @@
             <button class="btn" id="beltBtn" title="传送带模式 (E键切换)">传送带(E)</button>
             <button class="btn splitter-btn" id="splitterBtn" title="分流器">分流器</button>
             <button class="btn merger-btn" id="mergerBtn" title="汇流器">汇流器</button>
+            <button class="btn" id="pipeBtn" title="水管模式 (Q键切换)">水管(Q)</button>
+            <button class="btn splitter-btn" id="pipeSplitterBtn" title="管道分流器">管道分流</button>
+            <button class="btn merger-btn" id="pipeMergerBtn" title="管道汇流器">管道汇流</button>
         </div>
         <div class="btn-group">
             <button class="btn rotate-btn" id="rotateBtn" title="旋转当前尺寸 (或按R)">旋转(R)</button>
@@ -293,7 +295,13 @@
 
     // 网格: 增加 beltDeviceId 字段
     let grid = Array(GRID_SIZE).fill().map(() => 
-        Array(GRID_SIZE).fill().map(() => ({ machineId: null, beltIds: [], beltDeviceId: null }))
+        Array(GRID_SIZE).fill().map(() => ({ 
+            machineId: null, 
+            beltIds: [], 
+            beltDeviceId: null,
+            pipeIds: [],         // 水管路径
+            pipeDeviceId: null   // 管道分流器/汇流器
+        }))
     );
 
     // 普通机器
@@ -305,6 +313,12 @@
     // ===== 新增: 分流器/汇流器独立存储 =====
     let beltDevices = [];          // 每个元素: { id, x, y, name, direction, w:1, h:1 }
     let nextBeltDeviceId = 0;
+    
+    // ===== 水管相关 =====
+    let pipePaths = [];            // 水管路径，结构同传送带
+    let nextPipeId = 0;
+    let pipeDevices = [];          // 管道分流器/汇流器
+    let nextPipeDeviceId = 0;
 
     let placementActive = false;
     let preview = { active: false, gridX: 0, gridY: 0 };
@@ -323,6 +337,7 @@
 
     // 新增: 拾起的分流器/汇流器
     let pickedUpBeltDevice = null;       // { device, offsetX, offsetY, gridX, gridY }
+    let pickedUpPipeDevice = null;       // { device, offsetX, offsetY, gridX, gridY }
 
     let zPressed = false;
 
@@ -330,6 +345,12 @@
     let beltStart = null;
     let beltPath = [];
     let extendingBeltId = null;
+    
+    // 水管模式
+    let pipeMode = false;
+    let pipeStart = null;
+    let pipePath = [];
+    let extendingPipeId = null;
 
     // DOM 元素
     const btn2x2 = document.getElementById('btn2x2');
@@ -339,6 +360,9 @@
     const beltBtn = document.getElementById('beltBtn');
     const splitterBtn = document.getElementById('splitterBtn');
     const mergerBtn = document.getElementById('mergerBtn');
+    const pipeBtn = document.getElementById('pipeBtn');
+    const pipeSplitterBtn = document.getElementById('pipeSplitterBtn');
+    const pipeMergerBtn = document.getElementById('pipeMergerBtn');
     const rotateBtn = document.getElementById('rotateBtn');
     const clearBtn = document.getElementById('clearBtn');
     const currentMachineSpan = document.getElementById('currentMachineLabel');
@@ -378,6 +402,35 @@
         }
     }
 
+    // 判断是否为管道分流器/汇流器
+    function isPipeSplitterOrMerger(name) {
+        return name === '管道分流器' || name === '管道汇流器';
+    }
+    
+    // 判断从管道设备出发的方向是否为输出方向
+    function isPipeDeviceOutputDir(device, dir) {
+        if (device.name === '管道分流器') {
+            return dir !== device.direction;
+        } else { // 管道汇流器
+            return dir === device.direction;
+        }
+    }
+
+    // 判断进入管道设备的方向是否为输入方向
+    function isPipeDeviceInputDir(device, dir) {
+        if (device.name === '管道分流器') {
+            return dir === device.direction;
+        } else { // 管道汇流器
+            return dir !== device.direction;
+        }
+    }
+    
+    // 获取管道设备在指定位置的设备
+    function getPipeDeviceAt(x, y) {
+        const did = (x>=0 && x<GRID_SIZE && y>=0 && y<GRID_SIZE) ? grid[y][x].pipeDeviceId : null;
+        return pipeDevices.find(d => d.id === did) || null;
+    }
+
     // ---------- 网格重建 ----------
     function rebuildGrid() {
         // 重置
@@ -386,6 +439,8 @@
                 grid[y][x].machineId = null;
                 grid[y][x].beltIds = [];
                 grid[y][x].beltDeviceId = null;
+                grid[y][x].pipeIds = [];
+                grid[y][x].pipeDeviceId = null;
             }
         }
         // 普通机器
@@ -408,11 +463,45 @@
                     }
                 }
             });
+            //处理环形
+            if(path.points[0].x === path.points[path.points.length-1].x && path.points[0].y === path.points[path.points.length-1].y) {
+                const p = path.points[0];
+                if (p.x >= 0 && p.x < GRID_SIZE && p.y >= 0 && p.y < GRID_SIZE) {
+                    if (grid[p.y][p.x].machineId === null) {
+                        grid[p.y][p.x].beltIds.pop();
+                    }
+                }
+            }
         });
         // 分流器/汇流器
         beltDevices.forEach(d => {
             if (d.x >=0 && d.x<GRID_SIZE && d.y>=0 && d.y<GRID_SIZE) {
                 grid[d.y][d.x].beltDeviceId = d.id;
+            }
+        });
+        // 水管
+        pipePaths.forEach(path => {
+            path.points.forEach(p => {
+                if (p.x >= 0 && p.x < GRID_SIZE && p.y >= 0 && p.y < GRID_SIZE) {
+                    if (grid[p.y][p.x].machineId === null) {
+                        grid[p.y][p.x].pipeIds.push(path.id);
+                    }
+                }
+            });
+            //处理环形
+            if(path.points[0].x === path.points[path.points.length-1].x && path.points[0].y === path.points[path.points.length-1].y) {
+                const p = path.points[0];
+                if (p.x >= 0 && p.x < GRID_SIZE && p.y >= 0 && p.y < GRID_SIZE) {
+                    if (grid[p.y][p.x].machineId === null) {
+                        grid[p.y][p.x].pipeIds.pop();
+                    }
+                }
+            }
+        });
+        // 管道分流器/汇流器
+        pipeDevices.forEach(d => {
+            if (d.x >=0 && d.x<GRID_SIZE && d.y>=0 && d.y<GRID_SIZE) {
+                grid[d.y][d.x].pipeDeviceId = d.id;
             }
         });
     }
@@ -426,6 +515,20 @@
     }
 
     function isMachineOutputCell(m, x, y) {
+        // 针对反应池特殊处理
+        if (m.name === '反应池') {
+            // 根据方向确定输出侧
+            if (m.direction === 0) { // 输出在右侧
+                return (x === m.x + m.w - 1) && (y === m.y + 1 || y === m.y + 3);
+            } else if (m.direction === 1) { // 输出在下侧
+                return (y === m.y + m.h - 1) && (x === m.x + 1 || x === m.x + 3);
+            } else if (m.direction === 2) { // 输出在左侧
+                return (x === m.x) && (y === m.y + 1 || y === m.y + 3);
+            } else if (m.direction === 3) { // 输出在上侧
+                return (y === m.y) && (x === m.x + 1 || x === m.x + 3);
+            }
+        }
+        // 原有通用逻辑
         if (m.direction === 0) return (x === m.x + m.w - 1 && y >= m.y && y < m.y + m.h);
         if (m.direction === 1) return (y === m.y + m.h - 1 && x >= m.x && x < m.x + m.w);
         if (m.direction === 2) return (x === m.x && y >= m.y && y < m.y + m.h);
@@ -434,6 +537,19 @@
     }
 
     function isMachineInputCell(m, x, y) {
+        // 针对反应池特殊处理
+        if (m.name === '反应池') {
+            if (m.direction === 0) { // 输入在左侧
+                return (x === m.x) && (y === m.y + 1 || y === m.y + 3);
+            } else if (m.direction === 1) { // 输入在上侧
+                return (y === m.y) && (x === m.x + 1 || x === m.x + 3);
+            } else if (m.direction === 2) { // 输入在右侧
+                return (x === m.x + m.w - 1) && (y === m.y + 1 || y === m.y + 3);
+            } else if (m.direction === 3) { // 输入在下侧
+                return (y === m.y + m.h - 1) && (x === m.x + 1 || x === m.x + 3);
+            }
+        }
+        // 原有通用逻辑
         if (m.direction === 0) return (x === m.x && y >= m.y && y < m.y + m.h);
         if (m.direction === 1) return (y === m.y && x >= m.x && x < m.x + m.w);
         if (m.direction === 2) return (x === m.x + m.w - 1 && y >= m.y && y < m.y + m.h);
@@ -452,7 +568,7 @@
     }
 
     // 检查区域可用性 (增加 excludeBeltDeviceId 参数)
-    function isAreaFree(x, y, w, h, excludeMachineId = null, newMachineDir = null, excludeBeltDeviceId = null) {
+    function isAreaFree(x, y, w, h, excludeMachineId = null, newMachineDir = null, excludeBeltDeviceId = null, excludePipeDeviceId = null) {
         for (let dy = 0; dy < h; dy++) {
             for (let dx = 0; dx < w; dx++) {
                 const nx = x + dx, ny = y + dy;
@@ -460,12 +576,13 @@
                 const cell = grid[ny][nx];
                 // 机器占用检查
                 if (cell.machineId !== null && cell.machineId !== excludeMachineId) return false;
-                // 分流器/汇流器占用检查
+                // 传送带/管道分流器占用检查
                 if (cell.beltDeviceId !== null && cell.beltDeviceId !== excludeBeltDeviceId) return false;
+                if (cell.pipeDeviceId !== null && cell.pipeDeviceId !== excludePipeDeviceId) return false;
 
-                // 如果当前放置的是分流器或汇流器 (尺寸1x1)
-                if (isSplitterOrMerger(curName) && w === 1 && h === 1) {
-                    //if (cell.beltIds.length === 0) return false;
+                // 对于任何类型的分流/汇流器(包括管道设备)，它们都是1x1并且可以放在传送带上
+                if ((isSplitterOrMerger(curName) || isPipeSplitterOrMerger(curName)) && w === 1 && h === 1) {
+                    // 不做 further beltIds 检查，允许覆盖有传送带的格子
                 } else {
                     // 普通机器：不允许有传送带 (除非是输入输出端，保留原逻辑)
                     if (cell.beltIds.length > 0) {
@@ -606,12 +723,131 @@
         return true;
     }
 
+    // 管道路径有效性检查 (改为与传送带一致，支持环形)
+    function isPipePathValid(pipepath, ignorePipeIds = []) {
+        if (pipepath.length < 2) return true;
+        for (let i = 0; i < pipepath.length - 1; i++) {
+            if (Math.abs(pipepath[i].x - pipepath[i+1].x) + Math.abs(pipepath[i].y - pipepath[i+1].y) !== 1) return false;
+        }
+        const isRing = pipepath.length > 2 && pipepath[0].x === pipepath[pipepath.length-1].x && pipepath[0].y === pipepath[pipepath.length-1].y;
+        if (isRing) {
+            for (let i = 0; i < pipepath.length; i++) {
+                const m = getMachineAt(pipepath[i].x, pipepath[i].y);
+                if (m && !isPipeSplitterOrMerger(m.name)) return false; // 普通机器不允许
+                const d = getPipeDeviceAt(pipepath[i].x, pipepath[i].y);
+                if (d) continue; // 允许管道分流汇流在环上
+            }
+        }
+        const seen = new Map();
+        for (let i = 0; i < pipepath.length; i++) {
+            const p = pipepath[i];
+            const key = p.x + ',' + p.y;
+            const machineHere = getMachineAt(p.x, p.y);
+            const deviceHere = getPipeDeviceAt(p.x, p.y);
+            if (machineHere && !isPipeSplitterOrMerger(machineHere.name)) {
+                if (i !== 0 && i !== pipepath.length - 1) return false;
+            }
+            if (seen.has(key)) {
+                const j = seen.get(key);
+                if (isRing && j === 0 && i === pipepath.length - 1) continue;
+                if (j === 0 || j === pipepath.length - 1) return false;
+                if (i === 0 || i === pipepath.length - 1) return false;
+                const prevJ = pipepath[j - 1];
+                const nextJ = pipepath[j + 1];
+                const dirPrevJ = getDirection(prevJ, p);
+                const dirNextJ = getDirection(p, nextJ);
+                if (dirPrevJ !== dirNextJ) return false;
+                const prevI = pipepath[i - 1];
+                const nextI = pipepath[i + 1];
+                const dirPrevI = getDirection(prevI, p);
+                const dirNextI = getDirection(p, nextI);
+                if (dirPrevI !== dirNextI) return false;
+                if ((dirPrevJ % 2) === (dirPrevI % 2)) return false;
+                const existingIds = grid[p.y][p.x].pipeIds.filter(id => !ignorePipeIds.includes(id));
+                if (existingIds.length > 0) return false;
+                continue;
+            } else {
+                seen.set(key, i);
+            }
+            // 对非机器格子检查交叉
+            if (!machineHere && !deviceHere) {
+                if (i === 0 || i === pipepath.length - 1) {
+                    if (grid[p.y][p.x].pipeIds.length > 0) {
+                        const ids = grid[p.y][p.x].pipeIds;
+                        if (ids.length !== 1) return false;
+                        if (!ignorePipeIds.includes(ids[0])) return false;
+                    }
+                } else {
+                    const prev = pipepath[i - 1];
+                    const next = pipepath[i + 1];
+                    const dir1 = getDirection(prev, p);
+                    const dir2 = getDirection(p, next);
+                    const isTurn = (dir1 !== dir2);
+                    if (isTurn) {
+                        if (grid[p.y][p.x].pipeIds.length > 0) return false;
+                    } else {
+                        if (!canPipeCrossWithExisting(p.x, p.y, dir1)) return false;
+                    }
+                }
+            }
+        }
+        if (pipepath.length >= 2) {
+            const start = pipepath[0];
+            const machine = getMachineAt(start.x, start.y);
+            const device = getPipeDeviceAt(start.x, start.y);
+            if (machine && !isPipeSplitterOrMerger(machine.name) && isMachineOutputCell(machine, start.x, start.y)) {
+                const firstDir = getDirection(start, pipepath[1]);
+                if (firstDir !== machine.direction) return false;
+            }
+            if (device) {
+                const firstDir = getDirection(start, pipepath[1]);
+                if (!isPipeDeviceOutputDir(device, firstDir)) return false;
+            }
+        }
+
+        if (pipepath.length >= 2) {
+            const end = pipepath[pipepath.length - 1];
+            const device = getPipeDeviceAt(end.x, end.y);
+            if (device) {
+                const lastDir = getDirection(pipepath[pipepath.length - 2], end);
+                if (!isPipeDeviceInputDir(device, (lastDir+2)%4)) return false;
+            }
+        }
+        return true;
+    }
+
     function canCrossWithExisting(x, y, newDir) {
         const ids = grid[y][x].beltIds;
         if (ids.length === 0) return true;
         if (ids.length >= 2) return false;
         const existingId = ids[0];
         const path = beltPaths.find(p => p.id === existingId);
+        if (!path) return false;
+        const isRing = path.points[0].x === path.points[path.points.length-1].x && 
+                       path.points[0].y === path.points[path.points.length-1].y;
+        const idx = path.points.findIndex(p => p.x === x && p.y === y);
+        if (idx === -1) return false;
+        const hasPrev = idx > 0;
+        const hasNext = idx < path.points.length - 1;
+        if ((!hasPrev || !hasNext) && !isRing) return false;
+        const prev = (isRing && idx==0) ? path.points[path.points.length-2] : path.points[idx-1];
+        const next = path.points[idx+1];
+        const dir1 = getDirection(prev, {x,y});
+        const dir2 = getDirection({x,y}, next);
+        if (dir1 !== dir2) return false;
+        const existingDir = dir1;
+        const isExistingHoriz = (existingDir === 0 || existingDir === 2);
+        const isNewHoriz = (newDir === 0 || newDir === 2);
+        return isExistingHoriz !== isNewHoriz;
+    }
+
+    // 管道版的交叉检查（与传送带相同逻辑但针对管道数据）
+    function canPipeCrossWithExisting(x, y, newDir) {
+        const ids = grid[y][x].pipeIds;
+        if (ids.length === 0) return true;
+        if (ids.length >= 2) return false;
+        const existingId = ids[0];
+        const path = pipePaths.find(p => p.id === existingId);
         if (!path) return false;
         const isRing = path.points[0].x === path.points[path.points.length-1].x && 
                        path.points[0].y === path.points[path.points.length-1].y;
@@ -754,13 +990,188 @@
         ctx.shadowBlur = 0;
     }
 
+    // 绘制水管
+    function drawPipes() {
+        pipePaths.forEach(path => {
+            const pts = path.points;
+            if (pts.length < 2) return;
+            const isClosed = pts[0].x === pts[pts.length-1].x && pts[0].y === pts[pts.length-1].y;
+            const drawPoints = isClosed ? pts.slice(0, -1) : pts;
+            if (drawPoints.length < 2) return;
+            ctx.save();
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'butt';
+            ctx.beginPath();
+            ctx.moveTo(drawPoints[0].x * CELL_SIZE + CELL_SIZE/2, drawPoints[0].y * CELL_SIZE + CELL_SIZE/2);
+            for (let i = 1; i < drawPoints.length; i++) {
+                ctx.lineTo(drawPoints[i].x * CELL_SIZE + CELL_SIZE/2, drawPoints[i].y * CELL_SIZE + CELL_SIZE/2);
+            }
+            if (isClosed) ctx.closePath();
+            ctx.strokeStyle = 'rgba(135, 206, 235, 0.4)';  // 天蓝色，半透明
+            ctx.lineWidth = Math.max(2, CELL_SIZE * 0.28);   // 更细的管道线
+            ctx.stroke();
+            ctx.strokeStyle = '#87ceeb';  // 天蓝色
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.restore();
+        });
+
+        // 绘制水流箭头（统一缩小）
+        ctx.fillStyle = '#87ceeb';
+        ctx.shadowColor = '#000';
+        ctx.shadowBlur = 4;
+        for (let y = 0; y < GRID_SIZE; y++) {
+            for (let x = 0; x < GRID_SIZE; x++) {
+                const ids = grid[y][x].pipeIds;
+                if (ids.length === 0) continue;
+                const device = getPipeDeviceAt(x, y);
+                if (device) continue; // 由设备自己绘制箭头
+
+                if (ids.length >= 2) {
+                    const cx = x * CELL_SIZE + CELL_SIZE / 2;
+                    const cy = y * CELL_SIZE + CELL_SIZE / 2;
+                    ctx.save();
+                    ctx.strokeStyle = '#87ceeb';
+                    ctx.lineWidth = 4;
+                    ctx.beginPath();
+                    ctx.moveTo(cx - 6, cy);
+                    ctx.lineTo(cx + 6, cy);
+                    ctx.moveTo(cx, cy - 6);
+                    ctx.lineTo(cx, cy + 6);
+                    ctx.stroke();
+                    ctx.restore();
+                    continue;
+                }
+                const id = ids[0];
+                const path = pipePaths.find(p => p.id === id);
+                if (!path) continue;
+                const pts = path.points;
+                const idx = pts.findIndex(p => p.x === x && p.y === y);
+                if (idx === -1) continue;
+                const isClosed = pts[0].x === pts[pts.length-1].x && pts[0].y === pts[pts.length-1].y;
+                const effectiveLength = isClosed ? pts.length - 1 : pts.length;
+                let hasPrev, hasNext;
+                let prevPoint = null, nextPoint = null;
+                if (isClosed) {
+                    hasPrev = true; hasNext = true;
+                    const prevIdx = (idx - 1 + effectiveLength) % effectiveLength;
+                    const nextIdx = (idx + 1) % effectiveLength;
+                    prevPoint = pts[prevIdx];
+                    nextPoint = pts[nextIdx];
+                } else {
+                    hasPrev = idx > 0;
+                    hasNext = idx < pts.length - 1;
+                    if (hasPrev) prevPoint = pts[idx - 1];
+                    if (hasNext) nextPoint = pts[idx + 1];
+                }
+                const cx = x * CELL_SIZE + CELL_SIZE / 2;
+                const cy = y * CELL_SIZE + CELL_SIZE / 2;
+                let angle;
+                if (hasPrev && hasNext) {
+                    const dirFromPrev = { x: x - prevPoint.x, y: y - prevPoint.y };
+                    const dirToNext = { x: nextPoint.x - x, y: nextPoint.y - y };
+                    const sumX = dirFromPrev.x + dirToNext.x;
+                    const sumY = dirFromPrev.y + dirToNext.y;
+                    angle = Math.atan2(sumY, sumX);
+                } else if (hasNext) {
+                    const dx = nextPoint.x - x;
+                    const dy = nextPoint.y - y;
+                    angle = Math.atan2(dy, dx);
+                } else if (hasPrev) {
+                    const dx = x - prevPoint.x;
+                    const dy = y - prevPoint.y;
+                    angle = Math.atan2(dy, dx);
+                } else continue;
+                ctx.save();
+                ctx.translate(cx, cy);
+                ctx.rotate(angle);
+                ctx.beginPath();
+                ctx.moveTo(8, 0);
+                ctx.lineTo(-4, -4);
+                ctx.lineTo(-4, 4);
+                ctx.closePath();
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+        ctx.shadowBlur = 0;
+    }
+
+    // 绘制管道分流器/汇流器 (单独)
+    function drawPipeDevice(device) {
+        const { x, y, name, direction } = device;
+        const cx = x * CELL_SIZE + CELL_SIZE/2;
+        const cy = y * CELL_SIZE + CELL_SIZE/2;
+        // 缩小管道分流/汇流器尺寸，但保持箭头大小不变
+        const size = CELL_SIZE * 0.38;
+        const arrowOffset = CELL_SIZE * 0.12;
+        // 固定箭头像素尺寸（与之前保持一致）
+        const arrowW = CELL_SIZE * 0.2; // 之前 size*0.4 == 0.2*CELL_SIZE
+        const arrowH = CELL_SIZE * 0.1; // 之前 size*0.2 == 0.1*CELL_SIZE
+
+        ctx.save();
+        ctx.shadowColor = '#000';
+        ctx.shadowBlur = 4;
+
+        // 背景形状（蓝色系统）
+        ctx.fillStyle = name === '管道分流器' ? '#6ba3d4' : '#4a7ba7';
+        ctx.beginPath();
+        if (name === '管道分流器') {
+            ctx.arc(cx, cy, size/2, 0, 2*Math.PI);
+        } else {
+            ctx.moveTo(cx, cy - size/2);
+            ctx.lineTo(cx + size/2, cy);
+            ctx.lineTo(cx, cy + size/2);
+            ctx.lineTo(cx - size/2, cy);
+            ctx.closePath();
+        }
+        ctx.fill();
+
+        // 四个方向的水流箭头（蓝色），使用固定像素尺寸
+        ctx.fillStyle = '#87ceeb';
+        ctx.shadowBlur = 6;
+        ctx.translate(cx, cy);
+
+        for (let dir = 0; dir < 4; dir++) {
+            let isInput;
+            if (name === '管道分流器') {
+                isInput = (dir === direction);
+            } else {
+                isInput = (dir !== direction);
+            }
+
+            ctx.save();
+            ctx.rotate(dir * Math.PI / 2);
+            if (!isInput) {
+                ctx.translate(arrowOffset + size*0.5, 0);
+                ctx.beginPath();
+                ctx.moveTo(0, 0);
+                ctx.lineTo(-arrowW, -arrowH);
+                ctx.lineTo(-arrowW, arrowH);
+                ctx.closePath();
+                ctx.fill();
+            } else {
+                ctx.translate(arrowOffset, 0);
+                ctx.beginPath();
+                ctx.moveTo(0, 0);
+                ctx.lineTo(arrowW, -arrowH);
+                ctx.lineTo(arrowW, arrowH);
+                ctx.closePath();
+                ctx.fill();
+            }
+            ctx.restore();
+        }
+        ctx.restore();
+    }
+
     // 绘制分流器/汇流器 (单独)
     function drawBeltDevice(device) {
         const { x, y, name, direction } = device;
         const cx = x * CELL_SIZE + CELL_SIZE/2;
         const cy = y * CELL_SIZE + CELL_SIZE/2;
-        const size = CELL_SIZE * 0.6;
-        const arrowOffset = CELL_SIZE * 0.2;
+        // 稍微缩小分流器/汇流器尺寸
+        const size = CELL_SIZE * 0.5;
+        const arrowOffset = CELL_SIZE * 0.18;
 
         ctx.save();
         ctx.shadowColor = '#000';
@@ -864,6 +1275,9 @@
         ctx.shadowColor = 'transparent';
         ctx.textAlign = 'left';
 
+        // 绘制水流口（蓝色箭头）
+        drawWaterPorts(x, y, w, h, name, direction);
+
         // 简单箭头（仅示意，原逻辑保留）
         if (w === 2 && h === 2 && name === '热能池') {
             ctx.shadowColor = '#000';
@@ -901,6 +1315,64 @@
 
         ctx.shadowColor = '#000';
         ctx.shadowBlur = 4;
+        if (name === '反应池') {
+            if (direction === 0) {
+                // 左侧输入（向内箭头）在第2和第4格
+                for (let row of [1, 3]) {
+                    const cx = x * CELL_SIZE + CELL_SIZE * 0.3;
+                    const cy = (y + row) * CELL_SIZE + CELL_SIZE / 2;
+                    drawArrow(cx, cy, 'right', 12);
+                }
+                // 右侧输出（向外箭头）在第2和第4格
+                for (let row of [1, 3]) {
+                    const cx = (x + w - 1) * CELL_SIZE + CELL_SIZE * 0.7;
+                    const cy = (y + row) * CELL_SIZE + CELL_SIZE / 2;
+                    drawArrow(cx, cy, 'right', 12);
+                }
+            } else if (direction === 1) {
+                // 上侧输入在第2和第4列
+                for (let col of [1, 3]) {
+                    const cx = (x + col) * CELL_SIZE + CELL_SIZE / 2;
+                    const cy = y * CELL_SIZE + CELL_SIZE * 0.3;
+                    drawArrow(cx, cy, 'down', 12);
+                }
+                // 下侧输出在第2和第4列
+                for (let col of [1, 3]) {
+                    const cx = (x + col) * CELL_SIZE + CELL_SIZE / 2;
+                    const cy = (y + h - 1) * CELL_SIZE + CELL_SIZE * 0.7;
+                    drawArrow(cx, cy, 'down', 12);
+                }
+            } else if (direction === 2) {
+                // 右侧输入在第2和第4行
+                for (let row of [1, 3]) {
+                    const cx = (x + w - 1) * CELL_SIZE + CELL_SIZE * 0.7;
+                    const cy = (y + row) * CELL_SIZE + CELL_SIZE / 2;
+                    drawArrow(cx, cy, 'left', 12);
+                }
+                // 左侧输出在第2和第4行
+                for (let row of [1, 3]) {
+                    const cx = x * CELL_SIZE + CELL_SIZE * 0.3;
+                    const cy = (y + row) * CELL_SIZE + CELL_SIZE / 2;
+                    drawArrow(cx, cy, 'left', 12);
+                }
+            } else if (direction === 3) {
+                // 下侧输入在第2和第4列
+                for (let col of [1, 3]) {
+                    const cx = (x + col) * CELL_SIZE + CELL_SIZE / 2;
+                    const cy = (y + h - 1) * CELL_SIZE + CELL_SIZE * 0.7;
+                    drawArrow(cx, cy, 'up', 12);
+                }
+                // 上侧输出在第2和第4列
+                for (let col of [1, 3]) {
+                    const cx = (x + col) * CELL_SIZE + CELL_SIZE / 2;
+                    const cy = y * CELL_SIZE + CELL_SIZE * 0.3;
+                    drawArrow(cx, cy, 'up', 12);
+                }
+            }
+            ctx.shadowBlur = 0;
+            return;
+        }
+
         if (direction === 0) {
             for (let row = 0; row < h; row++) {
                 const cx = x * CELL_SIZE + CELL_SIZE * 0.3;
@@ -949,6 +1421,103 @@
         ctx.shadowBlur = 0;
     }
 
+    // 绘制水流输入输出口
+    function drawWaterPorts(x, y, w, h, name, direction) {
+        // 只有特定机器有水流口
+        if (name !== '种植机' && name !== '天有烘炉' && name !== '反应池') return;
+        if (!(w === 5 && h === 5)) return; // 只有5x5机器有
+
+        ctx.save();
+        ctx.fillStyle = '#4169e1'; // 蓝色
+        ctx.shadowColor = '#000';
+        ctx.shadowBlur = 4;
+
+        // 获取水流口位置
+        const ports = getWaterPorts(x, y, w, h, name, direction);
+        
+        // 绘制输入口（蓝色箭头向内）和输出口（蓝色箭头向外）
+        ports.forEach(port => {
+            const cx = port.x * CELL_SIZE + CELL_SIZE / 2;
+            const cy = port.y * CELL_SIZE + CELL_SIZE / 2;
+            ctx.fillStyle = '#00bfff'; // 深蓝（输入）浅蓝（输出）
+            ctx.beginPath();
+            if (port.dir === 'left') {
+                ctx.moveTo(cx + 6, cy - 4);
+                ctx.lineTo(cx - 6, cy);
+                ctx.lineTo(cx + 6, cy + 4);
+            } else if (port.dir === 'right') {
+                ctx.moveTo(cx - 6, cy - 4);
+                ctx.lineTo(cx + 6, cy);
+                ctx.lineTo(cx - 6, cy + 4);
+            } else if (port.dir === 'up') {
+                ctx.moveTo(cx - 4, cy + 6);
+                ctx.lineTo(cx, cy - 6);
+                ctx.lineTo(cx + 4, cy + 6);
+            } else if (port.dir === 'down') {
+                ctx.moveTo(cx - 4, cy - 6);
+                ctx.lineTo(cx, cy + 6);
+                ctx.lineTo(cx + 4, cy - 6);
+            }
+            ctx.closePath();
+            ctx.fill();
+        });
+        ctx.restore();
+    }
+
+    // 获取机器的水流口位置
+    function getWaterPorts(x, y, w, h, name, direction) {
+        const ports = [];
+        const mid = 2;  // 第3格索引（5x5网格中）
+        const far = 4;  // 第5格索引（用于边界计算）
+        
+        if (name === '种植机' || name === '天有烘炉') {
+            // 在左侧内边中间行有一个水流输入口，第3格
+            // 输入箭头总是指向机器内部
+            if (direction === 0) { // 物品向右，左侧是下方
+                ports.push({ x: x + mid, y: y + h - 1, dir: 'up', isInput: true });
+            } else if (direction === 1) { // 物品向下，左侧是左方
+                ports.push({ x: x, y: y + mid, dir: 'right', isInput: true });
+            } else if (direction === 2) { // 物品向左，左侧是上方
+                ports.push({ x: x + mid, y: y, dir: 'down', isInput: true });
+            } else if (direction === 3) { // 物品向上，左侧是右方
+                ports.push({ x: x + w - 1, y: y + mid, dir: 'left', isInput: true });
+            }
+        } else if (name === '反应池') {
+            // 左侧两个输入口，右侧两个输出口（第2和第4行/列，即索引1和3）
+            if (direction === 0) { // 物品向右，左侧是下方，右侧是上方
+                // 左侧输入（南边界）：水流朝内（指向北）
+                ports.push({ x: x + 1, y: y + h - 1, dir: 'up', isInput: true });
+                ports.push({ x: x + 3, y: y + h - 1, dir: 'up', isInput: true });
+                // 右侧输出（北边界）：水流朝外（指向北）
+                ports.push({ x: x + 1, y: y, dir: 'up', isInput: false });
+                ports.push({ x: x + 3, y: y, dir: 'up', isInput: false });
+            } else if (direction === 1) { // 物品向下，左侧是左方，右侧是右方
+                // 左侧输入（西边界）：水流朝内（指向东）
+                ports.push({ x: x, y: y + 1, dir: 'right', isInput: true });
+                ports.push({ x: x, y: y + 3, dir: 'right', isInput: true });
+                // 右侧输出（东边界）：水流朝外（指向东）
+                ports.push({ x: x + w - 1, y: y + 1, dir: 'right', isInput: false });
+                ports.push({ x: x + w - 1, y: y + 3, dir: 'right', isInput: false });
+            } else if (direction === 2) { // 物品向左，左侧是上方，右侧是下方
+                // 左侧输入（北边界）：水流朝内（指向下）
+                ports.push({ x: x + 1, y: y, dir: 'down', isInput: true });
+                ports.push({ x: x + 3, y: y, dir: 'down', isInput: true });
+                // 右侧输出（南边界）：水流朝外（指向南）
+                ports.push({ x: x + 1, y: y + h - 1, dir: 'down', isInput: false });
+                ports.push({ x: x + 3, y: y + h - 1, dir: 'down', isInput: false });
+            } else if (direction === 3) { // 物品向上，左侧是右方，右侧是左方
+                // 左侧输入（东边界）：水流朝内（指向西）
+                ports.push({ x: x + w - 1, y: y + 1, dir: 'left', isInput: true });
+                ports.push({ x: x + w - 1, y: y + 3, dir: 'left', isInput: true });
+                // 右侧输出（西边界）：水流朝外（指向西）
+                ports.push({ x: x, y: y + 1, dir: 'left', isInput: false });
+                ports.push({ x: x, y: y + 3, dir: 'left', isInput: false });
+            }
+        }
+        
+        return ports;
+    }
+
     function drawArrow(cx, cy, dir, size) {
         ctx.fillStyle = '#ffffff';
         ctx.shadowColor = '#000';
@@ -989,6 +1558,7 @@
                 }
             }
         }
+
         return false;
     }
 
@@ -1061,11 +1631,11 @@
             for (let i = 1; i < beltPath.length; i++) {
                 ctx.lineTo(beltPath[i].x * CELL_SIZE + CELL_SIZE/2, beltPath[i].y * CELL_SIZE + CELL_SIZE/2);
             }
-            ctx.strokeStyle = baseValid ? 'rgba(0, 255, 0, 0.4)' : 'rgba(255, 0, 0, 0.4)';
-            ctx.lineWidth = CELL_SIZE - 4;
+                ctx.strokeStyle = baseValid ? 'rgba(0, 255, 0, 0.4)' : 'rgba(255, 0, 0, 0.4)';
+                ctx.lineWidth = CELL_SIZE - 6; // 传送带预览比默认再细一点
             ctx.stroke();
             ctx.strokeStyle = baseValid ? '#00ff00' : '#ff0000';
-            ctx.lineWidth = 2;
+                ctx.lineWidth = 2;
             ctx.stroke();
         }
         if (preview.active) {
@@ -1084,7 +1654,48 @@
                 ctx.moveTo(lastPoint.x * CELL_SIZE + CELL_SIZE/2, lastPoint.y * CELL_SIZE + CELL_SIZE/2);
                 ctx.lineTo(mx * CELL_SIZE + CELL_SIZE/2, my * CELL_SIZE + CELL_SIZE/2);
                 ctx.strokeStyle = finalValid ? 'rgba(0, 255, 0, 0.6)' : 'rgba(255, 0, 0, 0.6)';
-                ctx.lineWidth = CELL_SIZE - 4;
+                ctx.lineWidth = CELL_SIZE - 6; // 结束段也保持较细
+                ctx.stroke();
+                ctx.strokeStyle = finalValid ? '#00ff00' : '#ff0000';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+        }
+        ctx.restore();
+    }
+
+    // 绘制管道预览（与传送带预览行为一致）
+    function drawPipePreview() {
+        if (!pipeMode || pipePath.length === 0) return;
+        const lastPoint = pipePath[pipePath.length - 1];
+        ctx.save();
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'butt';
+        if (pipePath.length >= 2) {
+            ctx.beginPath();
+            ctx.moveTo(pipePath[0].x * CELL_SIZE + CELL_SIZE/2, pipePath[0].y * CELL_SIZE + CELL_SIZE/2);
+            for (let i = 1; i < pipePath.length; i++) {
+                ctx.lineTo(pipePath[i].x * CELL_SIZE + CELL_SIZE/2, pipePath[i].y * CELL_SIZE + CELL_SIZE/2);
+            }
+            const valid = isPipePathValid(pipePath, [extendingPipeId].filter(id => id !== null));
+            ctx.strokeStyle = valid ? 'rgba(0, 255, 0, 0.4)' : 'rgba(255, 0, 0, 0.4)';
+            ctx.lineWidth =  CELL_SIZE * 0.28;
+            ctx.stroke();
+            ctx.strokeStyle = valid ? '#00ff00' : '#ff0000';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+        // 结束延伸段
+        if (preview.active) {
+            const mx = preview.gridX, my = preview.gridY;
+            const last = pipePath[pipePath.length - 1];
+            if ((last.x !== mx || last.y !== my) && Math.abs(last.x - mx) + Math.abs(last.y - my) === 1) {
+                const finalValid = isPipePathValid(pipePath.concat([{ x: mx, y: my }]), []);
+                ctx.beginPath();
+                ctx.moveTo(last.x * CELL_SIZE + CELL_SIZE/2, last.y * CELL_SIZE + CELL_SIZE/2);
+                ctx.lineTo(mx * CELL_SIZE + CELL_SIZE/2, my * CELL_SIZE + CELL_SIZE/2);
+                ctx.strokeStyle = finalValid ? 'rgba(0,255,0,0.6)' : 'rgba(255,0,0,0.6)';
+                ctx.lineWidth = CELL_SIZE * 0.28;
                 ctx.stroke();
                 ctx.strokeStyle = finalValid ? '#00ff00' : '#ff0000';
                 ctx.lineWidth = 2;
@@ -1108,36 +1719,34 @@
         }
 
         drawBelts();
+        drawPipes();
         // 绘制普通机器
         machines.forEach(m => drawMachine(m));
         // 绘制分流器/汇流器
         beltDevices.forEach(d => drawBeltDevice(d));
+        // 绘制管道分流器/汇流器
+        pipeDevices.forEach(d => drawPipeDevice(d));
         drawBeltPreview();
+        drawPipePreview();
 
         // 放置预览 (普通机器)
         if (placementActive && !dragState.dragging && !pickedUpMachine && !pickedUpBeltDevice && preview.active) {
-            if (!isSplitterOrMerger(curName)) {
-                const px = preview.gridX, py = preview.gridY;
-                const isValid = isAreaFree(px, py, curW, curH, null, curDirection, null);
-                ctx.fillStyle = isValid ? 'rgba(0, 255, 100, 0.3)' : 'rgba(255, 40, 40, 0.4)';
-                ctx.fillRect(px * CELL_SIZE, py * CELL_SIZE, curW * CELL_SIZE, curH * CELL_SIZE);
-                ctx.strokeStyle = isValid ? '#b5ffb5' : '#ffb5b5';
-                ctx.lineWidth = 4;
-                ctx.strokeRect(px * CELL_SIZE, py * CELL_SIZE, curW * CELL_SIZE, curH * CELL_SIZE);
+            const px = preview.gridX, py = preview.gridY;
+            const isBeltOrPipeDev = isSplitterOrMerger(curName) || isPipeSplitterOrMerger(curName);
+            const isValid = isAreaFree(px, py, curW, curH, null, curDirection, null);
+            ctx.fillStyle = isValid ? 'rgba(0, 255, 100, 0.3)' : 'rgba(255, 40, 40, 0.4)';
+            ctx.fillRect(px * CELL_SIZE, py * CELL_SIZE, curW * CELL_SIZE, curH * CELL_SIZE);
+            ctx.strokeStyle = isValid ? '#b5ffb5' : '#ffb5b5';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(px * CELL_SIZE, py * CELL_SIZE, curW * CELL_SIZE, curH * CELL_SIZE);
+            if (!isBeltOrPipeDev) {
                 drawMachineContent(px, py, curW, curH, curName, curDirection);
                 if (curName === '供电桩') drawPowerRange(px, py);
             } else {
-                // 分流器/汇流器预览 (1x1)
-                const px = preview.gridX, py = preview.gridY;
-                const isValid = isAreaFree(px, py, 1, 1, null, curDirection, null);
-                ctx.fillStyle = isValid ? 'rgba(0, 255, 100, 0.3)' : 'rgba(255, 40, 40, 0.4)';
-                ctx.fillRect(px * CELL_SIZE, py * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-                ctx.strokeStyle = isValid ? '#b5ffb5' : '#ffb5b5';
-                ctx.lineWidth = 4;
-                ctx.strokeRect(px * CELL_SIZE, py * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-                // 临时绘制设备样式
+                // 1x1 设备预览
                 const tempDev = { x: px, y: py, name: curName, direction: curDirection };
-                drawBeltDevice(tempDev);
+                if (isPipeSplitterOrMerger(curName)) drawPipeDevice(tempDev);
+                else drawBeltDevice(tempDev);
             }
         }
 
@@ -1158,7 +1767,7 @@
         // 拾起的beltDevice
         if (pickedUpBeltDevice) {
             const { device, gridX, gridY } = pickedUpBeltDevice;
-            const isValid = isAreaFree(gridX, gridY, 1, 1, null, device.direction, device.id);
+            const isValid = isAreaFree(gridX, gridY, 1, 1, null, device.direction, device.id, null);
             ctx.fillStyle = isValid ? 'rgba(0, 200, 255, 0.4)' : 'rgba(255, 80, 80, 0.5)';
             ctx.fillRect(gridX * CELL_SIZE, gridY * CELL_SIZE, CELL_SIZE, CELL_SIZE);
             ctx.strokeStyle = isValid ? '#00ccff' : '#ff6666';
@@ -1166,6 +1775,18 @@
             ctx.strokeRect(gridX * CELL_SIZE, gridY * CELL_SIZE, CELL_SIZE, CELL_SIZE);
             const tempDev = { x: gridX, y: gridY, name: device.name, direction: device.direction };
             drawBeltDevice(tempDev);
+        }
+        // 拾起的pipeDevice
+        if (pickedUpPipeDevice) {
+            const { device, gridX, gridY } = pickedUpPipeDevice;
+            const isValid = isAreaFree(gridX, gridY, 1, 1, null, device.direction, null, device.id);
+            ctx.fillStyle = isValid ? 'rgba(0, 200, 255, 0.4)' : 'rgba(255, 80, 80, 0.5)';
+            ctx.fillRect(gridX * CELL_SIZE, gridY * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+            ctx.strokeStyle = isValid ? '#00ccff' : '#ff6666';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(gridX * CELL_SIZE, gridY * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+            const tempDev = { x: gridX, y: gridY, name: device.name, direction: device.direction };
+            drawPipeDevice(tempDev);
         }
 
         // 拖拽普通机器
@@ -1220,6 +1841,7 @@
         beltMode = !beltMode;
         if (beltMode) {
             placementActive = false;
+            pipeMode = false;
             beltStart = null;
             beltPath = [];
             extendingBeltId = null;
@@ -1227,6 +1849,25 @@
             potentialDrag = null;
             pickedUpMachine = null;
             pickedUpBeltDevice = null;
+            pickedUpPipeDevice = null;
+        }
+        updateUI();
+        draw();
+    }
+
+    function togglePipeMode() {
+        pipeMode = !pipeMode;
+        if (pipeMode) {
+            placementActive = false;
+            beltMode = false;
+            pipeStart = null;
+            pipePath = [];
+            extendingPipeId = null;
+            dragState.dragging = false;
+            potentialDrag = null;
+            pickedUpMachine = null;
+            pickedUpBeltDevice = null;
+            pickedUpPipeDevice = null;
         }
         updateUI();
         draw();
@@ -1234,18 +1875,25 @@
 
     function updateUI() {
         currentMachineSpan.textContent = curName ? `${curName} (${curW}x${curH})` : '未选择';
-        machineCountSpan.textContent = machines.length;  // 不统计beltDevices
+        machineCountSpan.textContent = machines.length;  // 不统计 beltDevices
         beltLengthSpan.textContent = beltPath.length;
 
-        if (beltMode) {
+        if (pipeMode) {
+            placementIndicator.innerHTML = '水管模式';
+            placementIndicator.style.background = '#1e90ff';
+            canvas.style.cursor = 'cell';   // 水管模式使用单元格光标
+        } else if (beltMode) {
             placementIndicator.innerHTML = '传送带模式';
             placementIndicator.style.background = '#3e6f8a';
+            canvas.style.cursor = 'crosshair';        // 传送带模式使用 十字准星光标
         } else if (placementActive) {
             placementIndicator.innerHTML = '放置模式';
             placementIndicator.style.background = '#3e9f5a';
+            canvas.style.cursor = 'copy';        // 放置模式使用复制光标
         } else {
             placementIndicator.innerHTML = '待放置';
             placementIndicator.style.background = '#ca6f3e';
+            canvas.style.cursor = 'default';     // 无模式时恢复默认箭头
         }
     }
 
@@ -1261,6 +1909,7 @@
                 curDirection = (w > h) ? 1 : (h > w ? 0 : 0);
                 placementActive = true;
                 beltMode = false;
+                pipeMode = false;
                 beltStart = null;
                 beltPath = [];
                 extendingBeltId = null;
@@ -1292,15 +1941,16 @@
         menu.style.display = 'grid';
     }
 
-    btn2x2.addEventListener('click', (e) => { e.stopPropagation(); showMenu(menu2x2, btn2x2); });
-    btn3x3.addEventListener('click', (e) => { e.stopPropagation(); showMenu(menu3x3, btn3x3); });
-    btn5x5.addEventListener('click', (e) => { e.stopPropagation(); showMenu(menu5x5, btn5x5); });
-    btn4x6.addEventListener('click', (e) => { e.stopPropagation(); showMenu(menu4x6, btn4x6); });
+    btn2x2.addEventListener('click', (e) => { e.stopPropagation(); pipeMode = false; showMenu(menu2x2, btn2x2); });
+    btn3x3.addEventListener('click', (e) => { e.stopPropagation(); pipeMode = false; showMenu(menu3x3, btn3x3); });
+    btn5x5.addEventListener('click', (e) => { e.stopPropagation(); pipeMode = false; showMenu(menu5x5, btn5x5); });
+    btn4x6.addEventListener('click', (e) => { e.stopPropagation(); pipeMode = false; showMenu(menu4x6, btn4x6); });
     beltBtn.addEventListener('click', toggleBeltMode);
     splitterBtn.addEventListener('click', () => {
         curW = 1; curH = 1; curName = '分流器'; curDirection = 0;
         placementActive = true;
         beltMode = false;
+        pipeMode = false;
         beltStart = null; beltPath = []; extendingBeltId = null;
         hideAllMenus();
         updateUI();
@@ -1310,7 +1960,29 @@
         curW = 1; curH = 1; curName = '汇流器'; curDirection = 0;
         placementActive = true;
         beltMode = false;
+        pipeMode = false;
         beltStart = null; beltPath = []; extendingBeltId = null;
+        hideAllMenus();
+        updateUI();
+        draw();
+    });
+    pipeBtn.addEventListener('click', togglePipeMode);
+    pipeSplitterBtn.addEventListener('click', () => {
+        curW = 1; curH = 1; curName = '管道分流器'; curDirection = 0;
+        placementActive = true;
+        beltMode = false;
+        pipeMode = false;
+        pipeStart = null; pipePath = []; extendingPipeId = null;
+        hideAllMenus();
+        updateUI();
+        draw();
+    });
+    pipeMergerBtn.addEventListener('click', () => {
+        curW = 1; curH = 1; curName = '管道汇流器'; curDirection = 0;
+        placementActive = true;
+        beltMode = false;
+        pipeMode = false;
+        pipeStart = null; pipePath = []; extendingPipeId = null;
         hideAllMenus();
         updateUI();
         draw();
@@ -1345,6 +2017,33 @@
             }
         }
 
+        if (pipeMode && pipeStart) {
+            const last = pipePath[pipePath.length-1];
+            if (last && (last.x !== ix || last.y !== iy) && Math.abs(last.x - ix) + Math.abs(last.y - iy) === 1) {
+                if (pipePath.length >= 2) {
+                    const secondLast = pipePath[pipePath.length-2];
+                    if (secondLast.x === ix && secondLast.y === iy) pipePath.pop();
+                    else {
+                        const machine = getMachineAt(ix, iy);
+                        // 检查是否是水流口
+                        const ports = machine ? getWaterPorts(machine.x, machine.y, machine.w, machine.h, machine.name, machine.direction) : [];
+                        const isValidPort = ports.some(p => p.x === ix && p.y === iy && p.isInput);
+                        if (machine) {
+                            if (isValidPort) pipePath.push({ x: ix, y: iy });
+                        } else pipePath.push({ x: ix, y: iy });
+                    }
+                } else {
+                    const machine = getMachineAt(ix, iy);
+                    const ports = machine ? getWaterPorts(machine.x, machine.y, machine.w, machine.h, machine.name, machine.direction) : [];
+                    const isValidPort = ports.some(p => p.x === ix && p.y === iy && p.isInput);
+                    if (machine) {
+                        if (isValidPort) pipePath.push({ x: ix, y: iy });
+                    } else pipePath.push({ x: ix, y: iy });
+                }
+                beltLengthSpan.textContent = pipePath.length;
+            }
+        }
+
         if (potentialDrag) {
             const { startX, startY, machineIdx, offsetX, offsetY, originalMachine } = potentialDrag;
             if (Math.abs(ix - startX) + Math.abs(iy - startY) >= 2) {
@@ -1376,6 +2075,11 @@
             pickedUpBeltDevice.gridY = iy - pickedUpBeltDevice.offsetY;
         }
 
+        if (pickedUpPipeDevice) {
+            pickedUpPipeDevice.gridX = ix - pickedUpPipeDevice.offsetX;
+            pickedUpPipeDevice.gridY = iy - pickedUpPipeDevice.offsetY;
+        }
+
         draw();
     });
 
@@ -1397,6 +2101,20 @@
         const { ix, iy } = getGridFromEvent(e);
 
         if (beltMode) {
+            // 传送带模式下也可以拖动分流器/汇流器
+            const deviceHit = findBeltDeviceIndexAt(ix, iy);
+            if (deviceHit) {
+                e.preventDefault();
+                const device = { ...deviceHit.device };
+                beltDevices.splice(deviceHit.index, 1);
+                rebuildGrid();
+                if (placementActive) deactivatePlacement();
+                dragState.dragging = false; potentialDrag = null;
+                const offsetX = ix - device.x, offsetY = iy - device.y;
+                pickedUpBeltDevice = { device, offsetX, offsetY, gridX: device.x, gridY: device.y };
+                updateUI(); draw();
+                return;
+            }
             // ... 原传送带逻辑不变 ...
             e.preventDefault();
             if (!beltStart) {
@@ -1539,9 +2257,191 @@
             return;
         }
 
-        if (pickedUpMachine || pickedUpBeltDevice) { e.preventDefault(); return; }
+        // 水管模式处理
+        if (pipeMode) {
+            // 水管模式下拖动管道设备
+            const deviceHit = findPipeDeviceIndexAt(ix, iy);
+            if (deviceHit) {
+                e.preventDefault();
+                const device = { ...deviceHit.device };
+                pipeDevices.splice(deviceHit.index, 1);
+                rebuildGrid();
+                if (placementActive) deactivatePlacement();
+                dragState.dragging = false; potentialDrag = null;
+                const offsetX = ix - device.x, offsetY = iy - device.y;
+                pickedUpPipeDevice = { device, offsetX, offsetY, gridX: device.x, gridY: device.y };
+                updateUI(); draw();
+                return;
+            }
+            e.preventDefault();
+            if (!pipeStart) {
+                // 初始化水管路径
+                const machine = getMachineAt(ix, iy);
+                const device = getPipeDeviceAt(ix, iy);
+                if (machine) {
+                    // 检查是否是水流输出口
+                    const ports = getWaterPorts(machine.x, machine.y, machine.w, machine.h, machine.name, machine.direction);
+                    const hasOutput = ports.some(p => p.x === ix && p.y === iy && !p.isInput);
+                    if (hasOutput) {
+                        pipeStart = { x: ix, y: iy, type: 'machineOutput' };
+                        pipePath = [{ x: ix, y: iy }];
+                        extendingPipeId = null;
+                    }
+                } else if (device) {
+                    pipeStart = { x: ix, y: iy, type: 'pipeDevice', device: device };
+                    pipePath = [{ x: ix, y: iy }];
+                    extendingPipeId = null;
+                } else {
+                    if (grid[iy][ix].pipeIds.length > 0) {
+                        const ids = grid[iy][ix].pipeIds;
+                        if (ids.length === 1) {
+                            const pathId = ids[0];
+                            const path = pipePaths.find(p => p.id === pathId);
+                            if (path) {
+                                const isRing = path.points.length >= 2 && 
+                                path.points[0].x === path.points[path.points.length - 1].x && 
+                                path.points[0].y === path.points[path.points.length - 1].y;
+                                const idx = path.points.findIndex(p => p.x === ix && p.y === iy);
+                                if (idx === path.points.length - 1 && !isRing) {
+                                    pipeStart = { x: ix, y: iy, type: 'pipeEnd' };
+                                    pipePath = [{ x: ix, y: iy }];
+                                    extendingPipeId = pathId;
+                                }
+                            }
+                        }
+                    } else {
+                        if (ix >= 0 && iy >= 0 && ix < GRID_SIZE && iy < GRID_SIZE &&
+                            grid[iy][ix].machineId === null && grid[iy][ix].pipeDeviceId === null && grid[iy][ix].pipeIds.length === 0) {
+                            pipeStart = { x: ix, y: iy, type: 'empty' };
+                            pipePath = [{ x: ix, y: iy }];
+                            extendingPipeId = null;
+                        }
+                    }
+                }
+                updateUI();
+                draw();
+                return;
+            }
+            // 继续放置水管
+            const machine = getMachineAt(ix, iy);
+            if (machine) {
+                // 检查是否是水流输入口
+                const ports = getWaterPorts(machine.x, machine.y, machine.w, machine.h, machine.name, machine.direction);
+                const isValidInput = ports.some(p => p.x === ix && p.y === iy && p.isInput);
+                if (!isValidInput) return;
+            }
+            if (!machine && grid[iy][ix].machineId !== null) return;
+
+            let endExtendId = null;
+            if (!machine && grid[iy][ix].pipeIds.length > 0) {
+                const ids = grid[iy][ix].pipeIds;
+                if (ids.length === 1) {
+                    const pathId = ids[0];
+                    const path = pipePaths.find(p => p.id === pathId);
+                    if (path) {
+                        const isRing = path.points.length >= 2 && 
+                        path.points[0].x === path.points[path.points.length - 1].x && 
+                        path.points[0].y === path.points[path.points.length - 1].y;
+                        const idx = path.points.findIndex(p => p.x === ix && p.y === iy);
+                        if (idx === 0 && !isRing) endExtendId = pathId;
+                    }
+                }
+            }
+            if (pipePath.length >= 2 && ix === pipePath[0].x && iy === pipePath[0].y) {
+                if (grid[iy][ix].machineId === null && grid[iy][ix].pipeDeviceId === null && grid[iy][ix].pipeIds.length === 0) {
+                    const closedPath = pipePath;
+                    if (isPipePathValid(closedPath, [])) {
+                        pipePaths.push({ id: nextPipeId++, points: closedPath });
+                        pipeStart = null;
+                        pipePath = [];
+                        extendingPipeId = null;
+                        rebuildGrid();
+                        updateUI();
+                        draw();
+                        return;
+                    }
+                }
+                return;
+            }
+            const idxInPath = pipePath.findIndex(p => p.x === ix && p.y === iy);
+            if (idxInPath !== -1) {
+                pipePath = pipePath.slice(0, idxInPath + 1);
+            } else {
+                const last = pipePath[pipePath.length - 1];
+                if (Math.abs(last.x - ix) + Math.abs(last.y - iy) !== 1) return;
+                pipePath.push({ x: ix, y: iy });
+            }
+
+            const ignoreIds = [extendingPipeId, endExtendId].filter(id => id !== null);
+            let fullValid = isPipePathValid(pipePath, ignoreIds);
+            let dirMatch = true;
+            if (pipePath.length >= 2) {
+                const lastDir = getDirection(pipePath[pipePath.length - 2], pipePath[pipePath.length - 1]);
+                const machine = getMachineAt(ix, iy);
+                const device = getPipeDeviceAt(ix, iy);
+                if (machine) {
+                    const ports = getWaterPorts(machine.x, machine.y, machine.w, machine.h, machine.name, machine.direction);
+                    const isValidInput = ports.some(p => p.x === ix && p.y === iy && p.isInput);
+                    if (!isValidInput) dirMatch = false;
+                } else if (device) {
+                    if (!isPipeDeviceInputDir(device, (lastDir+2)%4)) dirMatch = false;
+                }
+            }
+
+            if (fullValid && dirMatch && pipePath.length >= 2) {
+                if (extendingPipeId !== null && endExtendId !== null) {
+                    if (extendingPipeId === endExtendId) {
+                        const originalPath = pipePaths.find(p => p.id === extendingPipeId);
+                        if (originalPath) originalPath.points = originalPath.points.concat(pipePath.slice(1));
+                    } else {
+                        const pathA = pipePaths.find(p => p.id === extendingPipeId);
+                        const pathB = pipePaths.find(p => p.id === endExtendId);
+                        if (pathA && pathB) {
+                            const middle = pipePath.slice(1, -1);
+                            pathA.points = [...pathA.points, ...middle, ...pathB.points];
+                            pipePaths = pipePaths.filter(p => p.id !== endExtendId);
+                        }
+                    }
+                } else if (extendingPipeId !== null) {
+                    const originalPath = pipePaths.find(p => p.id === extendingPipeId);
+                    if (originalPath) originalPath.points = originalPath.points.concat(pipePath.slice(1));
+                } else if (endExtendId !== null) {
+                    const originalPath = pipePaths.find(p => p.id === endExtendId);
+                    if (originalPath) originalPath.points = pipePath.slice(0, -1).concat(originalPath.points);
+                } else {
+                    const id = nextPipeId++;
+                    pipePaths.push({ id, points: pipePath.map(p => ({ x: p.x, y: p.y })) });
+                }
+                rebuildGrid();
+                pipeStart = null;
+                pipePath = [];
+                extendingPipeId = null;
+            } else {
+                if (idxInPath === -1) pipePath.pop();
+            }
+            updateUI();
+            draw();
+            return;
+        }
+
+        if (pickedUpMachine || pickedUpBeltDevice || pickedUpPipeDevice) { e.preventDefault(); return; }
 
         // 优先检查是否点中beltDevice
+        const pipeDeviceHit = findPipeDeviceIndexAt(ix, iy);
+        if (pipeDeviceHit) {
+            e.preventDefault();
+            // 启动pipeDevice拖拽 (简易: 直接拾起)
+            const device = { ...pipeDeviceHit.device };
+            pipeDevices.splice(pipeDeviceHit.index, 1);
+            rebuildGrid();
+            if (placementActive) deactivatePlacement();
+            dragState.dragging = false; potentialDrag = null;
+            const offsetX = ix - device.x, offsetY = iy - device.y;
+            pickedUpPipeDevice = { device, offsetX, offsetY, gridX: device.x, gridY: device.y };
+            updateUI(); draw();
+            return;
+        }
+
         const deviceHit = findBeltDeviceIndexAt(ix, iy);
         if (deviceHit) {
             e.preventDefault();
@@ -1572,7 +2472,23 @@
 
         if (placementActive) {
             e.preventDefault();
-            if (isSplitterOrMerger(curName)) {
+            if (isPipeSplitterOrMerger(curName)) {
+                // 放置管道分流器/汇流器
+                if (isAreaFree(ix, iy, 1, 1, null, curDirection, null)) {
+                    const newDevice = {
+                        id: nextPipeDeviceId++,
+                        x: ix, y: iy,
+                        w: 1, h: 1,
+                        name: curName,
+                        direction: curDirection
+                    };
+                    pipeDevices.push(newDevice);
+                    rebuildGrid();
+                    updateUI();
+                    if (!zPressed) deactivatePlacement();
+                    draw();
+                } else draw();
+            } else if (isSplitterOrMerger(curName)) {
                 // 放置分流器/汇流器
                 if (isAreaFree(ix, iy, 1, 1, null, curDirection, null)) {
                     const newDevice = {
@@ -1606,11 +2522,18 @@
         }
     });
 
+    function findPipeDeviceIndexAt(ix, iy) {
+        const did = (ix>=0 && ix<GRID_SIZE && iy>=0 && iy<GRID_SIZE) ? grid[iy][ix].pipeDeviceId : null;
+        if (did === null) return null;
+        const idx = pipeDevices.findIndex(d => d.id === did);
+        return idx !== -1 ? { device: pipeDevices[idx], index: idx } : null;
+    }
+
     canvas.addEventListener('mouseup', (e) => {
         if (e.button !== 0) return;
         if (pickedUpMachine) {
             const { machine, gridX, gridY } = pickedUpMachine;
-            if (isAreaFree(gridX, gridY, machine.w, machine.h, machine.id, machine.direction, null)) {
+            if (isAreaFree(gridX, gridY, machine.w, machine.h, machine.id, machine.direction, null, null)) {
                 machine.x = gridX; machine.y = gridY;
                 machines.push(machine);
                 rebuildGrid();
@@ -1619,9 +2542,20 @@
             } else { draw(); }
             return;
         }
+        if (pickedUpPipeDevice) {
+            const { device, gridX, gridY } = pickedUpPipeDevice;
+            if (isAreaFree(gridX, gridY, 1, 1, null, device.direction, null, device.id)) {
+                device.x = gridX; device.y = gridY;
+                pipeDevices.push(device);
+                rebuildGrid();
+                pickedUpPipeDevice = null;
+                updateUI(); draw();
+            } else { draw(); }
+            return;
+        }
         if (pickedUpBeltDevice) {
             const { device, gridX, gridY } = pickedUpBeltDevice;
-            if (isAreaFree(gridX, gridY, 1, 1, null, device.direction, device.id)) {
+            if (isAreaFree(gridX, gridY, 1, 1, null, device.direction, device.id, null)) {
                 device.x = gridX; device.y = gridY;
                 beltDevices.push(device);
                 rebuildGrid();
@@ -1647,10 +2581,23 @@
     });
 
     canvas.addEventListener('dblclick', (e) => {
-        if(beltMode){return;}
+        if(beltMode || pipeMode){return;}
         e.preventDefault();
         const { ix, iy } = getGridFromEvent(e);
-        // 优先beltDevice
+        // 优先pipeDevice
+        const pipeDeviceHit = findPipeDeviceIndexAt(ix, iy);
+        if (pipeDeviceHit) {
+            const device = { ...pipeDeviceHit.device };
+            pipeDevices.splice(pipeDeviceHit.index, 1);
+            rebuildGrid();
+            if (placementActive) deactivatePlacement();
+            dragState.dragging = false; potentialDrag = null;
+            const offsetX = ix - device.x, offsetY = iy - device.y;
+            pickedUpPipeDevice = { device, offsetX, offsetY, gridX: device.x, gridY: device.y };
+            updateUI(); draw();
+            return;
+        }
+        // 再检查beltDevice
         const deviceHit = findBeltDeviceIndexAt(ix, iy);
         if (deviceHit) {
             const device = { ...deviceHit.device };
@@ -1680,8 +2627,33 @@
         e.preventDefault();
         const { ix, iy } = getGridFromEvent(e);
 
-        // 传送带模式下的特殊处理
-        if (beltMode) {
+        // 水管模式下的特殊处理
+        if (pipeMode) {
+            if (pipeStart !== null) {
+                // 正在放置新水管：右键取消本次放置，不清除水管模式
+                pipeStart = null;
+                pipePath = [];
+                extendingPipeId = null;
+            } else {
+                // 空闲水管模式：只删除光标下的水管和管道分流器汇流器（如果有）
+                const pipeDeviceHit = findPipeDeviceIndexAt(ix, iy);
+                if (pipeDeviceHit) {
+                    pipeDevices.splice(pipeDeviceHit.index, 1);
+                    rebuildGrid();
+                    updateUI();
+                    draw();
+                    return;
+                }
+                if (grid[iy][ix].pipeIds.length > 0) {
+                    const id = grid[iy][ix].pipeIds[0];
+                    const index = pipePaths.findIndex(p => p.id === id);
+                    if (index !== -1) {
+                        pipePaths.splice(index, 1);
+                        rebuildGrid();
+                    }
+                }
+            }
+        } else if (beltMode) {
             if (beltStart !== null) {
                 // 正在放置新传送带：右键取消本次放置，不清除传送带模式
                 beltStart = null;
@@ -1709,30 +2681,47 @@
                 // 如果光标下没有传送带，什么也不做（保持传送带模式激活）
             }
         } else {
-            // 非传送带模式：原有逻辑（删除机器/分流汇流器/传送带）
-            const deviceHit = findBeltDeviceIndexAt(ix, iy);
-            if (deviceHit) {
-                beltDevices.splice(deviceHit.index, 1);
+            // 非传送带/水管模式：原有逻辑（删除机器/分流汇流器/传送带/水管）
+            const pipeDeviceHit = findPipeDeviceIndexAt(ix, iy);
+            if (pipeDeviceHit && (pipeDeviceHit.device.name === '管道分流器' || pipeDeviceHit.device.name === '管道汇流器')) {
+                pipeDevices.splice(pipeDeviceHit.index, 1);
                 rebuildGrid();
             } else {
-                const hit = findMachineIndexAt(ix, iy);
-                if (hit) {
-                    machines.splice(hit.index, 1);
+                const deviceHit = findBeltDeviceIndexAt(ix, iy);
+                if (deviceHit) {
+                    beltDevices.splice(deviceHit.index, 1);
                     rebuildGrid();
-                } else if (grid[iy][ix].beltIds.length > 0) {
-                    const ids = grid[iy][ix].beltIds;
-                    if (ids.length > 0) {
-                        const id = ids[0];
-                        const index = beltPaths.findIndex(p => p.id === id);
-                        if (index !== -1) {
-                            beltPaths.splice(index, 1);
-                            rebuildGrid();
-                        }
-                    }
                 } else {
-                    if (placementActive) deactivatePlacement();
-                    if (pickedUpMachine) pickedUpMachine = null;
-                    if (pickedUpBeltDevice) pickedUpBeltDevice = null;
+                    const hit = findMachineIndexAt(ix, iy);
+                    if (hit) {
+                        machines.splice(hit.index, 1);
+                        rebuildGrid();
+                    } else if (grid[iy][ix].pipeIds.length > 0) {
+                        const ids = grid[iy][ix].pipeIds;
+                        if (ids.length > 0) {
+                            const id = ids[0];
+                            const index = pipePaths.findIndex(p => p.id === id);
+                            if (index !== -1) {
+                                pipePaths.splice(index, 1);
+                                rebuildGrid();
+                            }
+                        }
+                    } else if (grid[iy][ix].beltIds.length > 0) {
+                        const ids = grid[iy][ix].beltIds;
+                        if (ids.length > 0) {
+                            const id = ids[0];
+                            const index = beltPaths.findIndex(p => p.id === id);
+                            if (index !== -1) {
+                                beltPaths.splice(index, 1);
+                                rebuildGrid();
+                            }
+                        }
+                    } else {
+                        if (placementActive) deactivatePlacement();
+                        if (pickedUpMachine) pickedUpMachine = null;
+                        if (pickedUpBeltDevice) pickedUpBeltDevice = null;
+                        if (pickedUpPipeDevice) pickedUpPipeDevice = null;
+                    }
                 }
             }
         }
@@ -1754,6 +2743,10 @@
             e.preventDefault();
             if (pickedUpBeltDevice) {
                 const d = pickedUpBeltDevice.device;
+                d.direction = (d.direction + 1) % 4;
+                draw();
+            } else if (pickedUpPipeDevice) {
+                const d = pickedUpPipeDevice.device;
                 d.direction = (d.direction + 1) % 4;
                 draw();
             } else if (pickedUpMachine) {
@@ -1784,6 +2777,7 @@
             }
         }
         if (e.key === 'e' || e.key === 'E') { e.preventDefault(); toggleBeltMode(); }
+        if (e.key === 'q' || e.key === 'Q') { e.preventDefault(); togglePipeMode(); }
     });
 
     window.addEventListener('keyup', (e) => {
@@ -1827,12 +2821,16 @@
         machines = [];
         beltPaths = [];
         beltDevices = [];
-        nextMachineId = 0; nextBeltId = 0; nextBeltDeviceId = 0;
+        pipePaths = [];
+        pipeDevices = [];
+        nextMachineId = 0; nextBeltId = 0; nextBeltDeviceId = 0; nextPipeId = 0; nextPipeDeviceId = 0;
         rebuildGrid();
         if (placementActive) deactivatePlacement();
         dragState.dragging = false; potentialDrag = null; pickedUpMachine = null; pickedUpBeltDevice = null;
         beltMode = false; beltStart = null; beltPath = [];
         extendingBeltId = null;
+        pipeMode = false; pipeStart = null; pipePath = [];
+        extendingPipeId = null;
         updateUI(); draw();
     });
 

@@ -240,7 +240,6 @@
             <button class="btn rotate-btn" id="rotateBtn" title="旋转当前尺寸 (或按R)">旋转(R)</button>
             <button class="btn clear-btn" id="clearBtn" title="移除所有机器和传送带">清空</button>
         </div>
-        <span class="placement-indicator" id="placementIndicator">待放置</span>
 
         <div id="menu2x2" class="machine-menu" style="top: 100px; left: 20px;"></div>
         <div id="menu3x3" class="machine-menu" style="top: 100px; left: 20px;"></div>
@@ -254,6 +253,7 @@
         <div class="info-item">机器数量 <span class="coord" id="machineCount">0</span></div>
         <div class="info-item">传送带路径 <span class="coord" id="beltLength">0</span></div>
         <div class="info-item">按住Z连续放置 | 双击机器拾起 | 右键删除</div>
+        <span class="placement-indicator" id="placementIndicator">待放置</span>
     </div>
 </div>
 
@@ -278,7 +278,7 @@
 
     // ---------- 常量 ----------
     const GRID_SIZE = 45;
-    const CELL_SIZE = 30;          // 逻辑像素
+    let CELL_SIZE = 30;          // 逻辑像素
 
     // 机器定义 (原有)
     const machineTypes = {
@@ -1781,7 +1781,7 @@
         if (pickedUpMachine) {
             const { machine, gridX, gridY } = pickedUpMachine;
             const { w, h, name, direction, id } = machine;
-            const isValid = isAreaFree(gridX, gridY, w, h, id, direction, null);
+            const isValid = isAreaFree(gridX, gridY, w, h, id, direction, null, null);
             ctx.fillStyle = isValid ? 'rgba(0, 200, 255, 0.4)' : 'rgba(255, 80, 80, 0.5)';
             ctx.fillRect(gridX * CELL_SIZE, gridY * CELL_SIZE, w * CELL_SIZE, h * CELL_SIZE);
             ctx.strokeStyle = isValid ? '#00ccff' : '#ff6666';
@@ -2128,21 +2128,6 @@
         const { ix, iy } = getGridFromEvent(e);
 
         if (beltMode) {
-            // 传送带模式下也可以拖动分流器/汇流器
-            const deviceHit = findBeltDeviceIndexAt(ix, iy);
-            if (deviceHit) {
-                e.preventDefault();
-                const device = { ...deviceHit.device };
-                beltDevices.splice(deviceHit.index, 1);
-                rebuildGrid();
-                if (placementActive) deactivatePlacement();
-                dragState.dragging = false; potentialDrag = null;
-                const offsetX = ix - device.x, offsetY = iy - device.y;
-                pickedUpBeltDevice = { device, offsetX, offsetY, gridX: device.x, gridY: device.y };
-                updateUI(); draw();
-                return;
-            }
-            // ... 原传送带逻辑不变 ...
             e.preventDefault();
             if (!beltStart) {
                 const machine = getMachineAt(ix, iy);
@@ -2286,20 +2271,6 @@
 
         // 水管模式处理
         if (pipeMode) {
-            // 水管模式下拖动管道设备
-            const deviceHit = findPipeDeviceIndexAt(ix, iy);
-            if (deviceHit) {
-                e.preventDefault();
-                const device = { ...deviceHit.device };
-                pipeDevices.splice(deviceHit.index, 1);
-                rebuildGrid();
-                if (placementActive) deactivatePlacement();
-                dragState.dragging = false; potentialDrag = null;
-                const offsetX = ix - device.x, offsetY = iy - device.y;
-                pickedUpPipeDevice = { device, offsetX, offsetY, gridX: device.x, gridY: device.y };
-                updateUI(); draw();
-                return;
-            }
             e.preventDefault();
             if (!pipeStart) {
                 // 初始化水管路径

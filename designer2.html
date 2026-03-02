@@ -2088,10 +2088,30 @@
         if (beltMode && beltStart) {
             const last = beltPath[beltPath.length-1];
             if (last && (last.x !== ix || last.y !== iy)) {
-                // 1. 如果移动回到本次放置路径上的某个已有格子，视为多格回退
+                // 1. 如果移动回到本次放置路径上的某个已有格子，，且该格子和当前格子之间所有的格子之间最多一次转弯，视为多格回退
                 const existingIndex = beltPath.findIndex((p, idx) => p.x === ix && p.y === iy);
-                if (existingIndex !== -1 && existingIndex < beltPath.length - 1) {
-                    // 回退到该格子（包含该格子）
+                let isBackward = (existingIndex !== -1 && existingIndex < beltPath.length - 1);
+                if (isBackward) {
+                    let turnCount = 0;
+                    let lastTurn = null;
+                    for (let i = existingIndex + 1; i < beltPath.length; i++) {
+                        const dx = beltPath[i].x - beltPath[i-1].x;
+                        const dy = beltPath[i].y - beltPath[i-1].y;
+                        if(!lastTurn) {
+                            lastTurn = { x: dx, y: dy };
+                        } else {
+                            if (lastTurn.x !== dx || lastTurn.y !== dy) {
+                                turnCount++;
+                                if (turnCount > 1) {
+                                    isBackward = false;
+                                    break;
+                                }
+                                lastTurn = { x: dx, y: dy };
+                            }
+                        }
+                    }
+                }
+                if (isBackward) {
                     beltPath = beltPath.slice(0, existingIndex + 1);
                     beltLengthSpan.textContent = beltPath.length;
                 } else {
